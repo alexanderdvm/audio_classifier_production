@@ -1,0 +1,10 @@
+{
+  "feature_type": "concat",
+  "sr": 4000,
+  "duration": 10,
+  "n_mfcc": 40,
+  "n_mels": 40,
+  "hop_length": 256,
+  "target_frames": 157,
+  "class_names": null
+}
