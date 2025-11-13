@@ -1,0 +1,362 @@
+"""
+Sistema de Clasificación de Audio - Backend Flask
+Autor: Sistema de producción para modelos entrenados con k-fold CV
+"""
+
+import os
+import json
+import numpy as np
+import librosa
+import tensorflow as tf
+from flask import Flask, request, jsonify, render_template, send_from_directory
+from flask_cors import CORS
+from werkzeug.utils import secure_filename
+import logging
+from datetime import datetime
+from pathlib import Path
+
+# ========== CONFIGURACIÓN ==========
+app = Flask(__name__)
+CORS(app)
+
+# Configuración de logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# Paths
+BASE_DIR = Path(__file__).parent
+UPLOAD_FOLDER = BASE_DIR / 'uploads'
+MODEL_DIR = BASE_DIR / 'models'
+RESULTS_DIR = BASE_DIR / 'results'
+
+# Crear directorios necesarios
+UPLOAD_FOLDER.mkdir(exist_ok=True)
+RESULTS_DIR.mkdir(exist_ok=True)
+
+# Configuración de Flask
+app.config['UPLOAD_FOLDER'] = str(UPLOAD_FOLDER)
+app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max
+ALLOWED_EXTENSIONS = {'wav', 'WAV'}
+
+# Parámetros de audio (DEBEN coincidir con el entrenamiento)
+SR = 4000
+DURATION = 10
+SAMPLES = SR * DURATION
+N_MFCC = 40
+N_MELS = 40
+HOP_LENGTH = 256
+
+# Variables globales para modelos y metadatos
+MODELS = {}
+METADATA = {}
+FEATURE_TYPES = ['mfcc', 'mel', 'concat']
+
+
+# ========== UTILIDADES ==========
+def allowed_file(filename):
+    return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
+
+
+def extract_mfcc(filepath):
+    """Extrae características MFCC"""
+    y, _ = librosa.load(filepath, sr=SR, duration=DURATION)
+    if len(y) < SAMPLES:
+        y = np.pad(y, (0, SAMPLES - len(y)))
+    else:
+        y = y[:SAMPLES]
+    return librosa.feature.mfcc(y=y, sr=SR, n_mfcc=N_MFCC, hop_length=HOP_LENGTH)
+
+
+def extract_mel(filepath):
+    """Extrae características Mel-spectrogram"""
+    y, _ = librosa.load(filepath, sr=SR, duration=DURATION)
+    if len(y) < SAMPLES:
+        y = np.pad(y, (0, SAMPLES - len(y)))
+    else:
+        y = y[:SAMPLES]
+    mel = librosa.feature.melspectrogram(y=y, sr=SR, n_mels=N_MELS, hop_length=HOP_LENGTH)
+    return librosa.power_to_db(mel, ref=np.max)
+
+
+def pad_feature(feat, target_frames):
+    """Ajusta el tamaño de la característica"""
+    if feat.shape[1] < target_frames:
+        pad_width = target_frames - feat.shape[1]
+        feat = np.pad(feat, ((0, 0), (0, pad_width)), mode='constant')
+    else:
+        feat = feat[:, :target_frames]
+    return feat
+
+
+def extract_features(filepath, feature_type, target_frames):
+    """Extrae características según el tipo especificado"""
+    if feature_type == 'mfcc':
+        feat = extract_mfcc(filepath)
+    elif feature_type == 'mel':
+        feat = extract_mel(filepath)
+    elif feature_type == 'concat':
+        mfcc = extract_mfcc(filepath)
+        mel = extract_mel(filepath)
+        feat = np.vstack([mfcc, mel])
+    else:
+        raise ValueError(f"Tipo de feature desconocido: {feature_type}")
+    
+    feat = pad_feature(feat, target_frames)
+    return feat[..., np.newaxis]  # Añadir canal
+
+
+def load_models_and_metadata():
+    """Carga todos los modelos k-fold y sus metadatos"""
+    global MODELS, METADATA
+    
+    for feature_type in FEATURE_TYPES:
+        feature_dir = MODEL_DIR / feature_type / 'models'
+        summary_path = MODEL_DIR / feature_type / 'summary.json'
+        
+        if not feature_dir.exists():
+            logger.warning(f"No se encontró directorio para {feature_type}: {feature_dir}")
+            continue
+        
+        # Cargar metadatos
+        if summary_path.exists():
+            with open(summary_path, 'r') as f:
+                METADATA[feature_type] = json.load(f)
+        
+        # Cargar los 5 modelos de k-fold
+        MODELS[feature_type] = []
+        for fold in range(1, 6):
+            model_path = feature_dir / f'{feature_type}_fold{fold}_best.h5'
+            if model_path.exists():
+                try:
+                    model = tf.keras.models.load_model(str(model_path))
+                    MODELS[feature_type].append({
+                        'fold': fold,
+                        'model': model,
+                        'path': str(model_path)
+                    })
+                    logger.info(f"✓ Cargado: {feature_type} - Fold {fold}")
+                except Exception as e:
+                    logger.error(f"✗ Error cargando {model_path}: {e}")
+            else:
+                logger.warning(f"Modelo no encontrado: {model_path}")
+    
+    # Cargar clases desde metadata o desde archivo separado
+    classes_path = MODEL_DIR / 'classes.json'
+    if classes_path.exists():
+        with open(classes_path, 'r') as f:
+            METADATA['classes'] = json.load(f)
+    
+    logger.info(f"Modelos cargados: {list(MODELS.keys())}")
+
+
+def predict_ensemble(filepath, feature_type):
+    """
+    Realiza predicción con ensemble de los 5 k-folds
+    Retorna predicción promediada y confianzas individuales
+    """
+    if feature_type not in MODELS or not MODELS[feature_type]:
+        raise ValueError(f"No hay modelos cargados para {feature_type}")
+    
+    # Obtener target_frames del primer modelo
+    first_model = MODELS[feature_type][0]['model']
+    input_shape = first_model.input_shape
+    target_frames = input_shape[2]  # (batch, height, width, channels)
+    
+    # Extraer características
+    features = extract_features(filepath, feature_type, target_frames)
+    features = features.astype('float32')
+    
+    # Normalización (usar media/std global o del entrenamiento si está disponible)
+    mean = features.mean()
+    std = features.std() + 1e-9
+    features = (features - mean) / std
+    
+    # Expandir dimensión batch
+    features = np.expand_dims(features, axis=0)
+    
+    # Predicción con cada fold
+    fold_predictions = []
+    for model_info in MODELS[feature_type]:
+        pred = model_info['model'].predict(features, verbose=0)
+        fold_predictions.append(pred[0])
+    
+    # Promedio de predicciones
+    avg_pred = np.mean(fold_predictions, axis=0)
+    std_pred = np.std(fold_predictions, axis=0)
+    
+    predicted_class = int(np.argmax(avg_pred))
+    confidence = float(avg_pred[predicted_class])
+    
+    return {
+        'predicted_class_idx': predicted_class,
+        'confidence': confidence,
+        'all_probabilities': avg_pred.tolist(),
+        'std_probabilities': std_pred.tolist(),
+        'fold_predictions': [pred.tolist() for pred in fold_predictions]
+    }
+
+
+# ========== RUTAS API ==========
+@app.route('/')
+def index():
+    """Página principal"""
+    return render_template('index.html')
+
+
+@app.route('/api/info', methods=['GET'])
+def get_info():
+    """Información del sistema y modelos disponibles"""
+    info = {
+        'status': 'online',
+        'timestamp': datetime.now().isoformat(),
+        'available_features': list(MODELS.keys()),
+        'models_loaded': {
+            ft: len(models) for ft, models in MODELS.items()
+        },
+        'metadata': {
+            ft: {
+                'mean_acc': meta.get('mean_acc'),
+                'std_acc': meta.get('std_acc'),
+                'mean_f1_macro': meta.get('mean_f1_macro')
+            }
+            for ft, meta in METADATA.items() if ft in FEATURE_TYPES
+        }
+    }
+    
+    # Incluir clases si están disponibles
+    if 'classes' in METADATA:
+        info['classes'] = METADATA['classes']
+    
+    return jsonify(info)
+
+
+@app.route('/api/predict', methods=['POST'])
+def predict():
+    """
+    Endpoint principal de predicción
+    Acepta: audio file (.wav), feature_type (opcional)
+    """
+    try:
+        # Validar archivo
+        if 'file' not in request.files:
+            return jsonify({'error': 'No se proporcionó archivo'}), 400
+        
+        file = request.files['file']
+        if file.filename == '':
+            return jsonify({'error': 'Nombre de archivo vacío'}), 400
+        
+        if not allowed_file(file.filename):
+            return jsonify({'error': 'Formato no permitido. Solo .wav'}), 400
+        
+        # Obtener feature_type (default: el mejor según métricas)
+        feature_type = request.form.get('feature_type', 'concat')
+        if feature_type not in MODELS:
+            return jsonify({'error': f'Feature type no disponible: {feature_type}'}), 400
+        
+        # Guardar archivo temporalmente
+        filename = secure_filename(file.filename)
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        saved_filename = f"{timestamp}_{filename}"
+        filepath = UPLOAD_FOLDER / saved_filename
+        file.save(str(filepath))
+        
+        # Realizar predicción
+        result = predict_ensemble(str(filepath), feature_type)
+        
+        # Añadir información adicional
+        result['filename'] = filename
+        result['feature_type'] = feature_type
+        result['timestamp'] = timestamp
+        
+        # Mapear índice a nombre de clase si está disponible
+        if 'classes' in METADATA:
+            classes = METADATA['classes']
+            result['predicted_class'] = classes[result['predicted_class_idx']]
+            result['class_probabilities'] = {
+                classes[i]: float(prob) 
+                for i, prob in enumerate(result['all_probabilities'])
+            }
+        
+        # Guardar resultado
+        result_path = RESULTS_DIR / f"{timestamp}_{filename}.json"
+        with open(result_path, 'w') as f:
+            json.dump(result, f, indent=2)
+        
+        logger.info(f"Predicción exitosa: {filename} -> clase {result.get('predicted_class', result['predicted_class_idx'])}")
+        
+        return jsonify(result)
+    
+    except Exception as e:
+        logger.error(f"Error en predicción: {str(e)}")
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/predict/batch', methods=['POST'])
+def predict_batch():
+    """Predicción en lote para múltiples archivos"""
+    try:
+        if 'files' not in request.files:
+            return jsonify({'error': 'No se proporcionaron archivos'}), 400
+        
+        files = request.files.getlist('files')
+        feature_type = request.form.get('feature_type', 'concat')
+        
+        results = []
+        for file in files:
+            if file and allowed_file(file.filename):
+                filename = secure_filename(file.filename)
+                timestamp = datetime.now().strftime('%Y%m%d_%H%M%S_%f')
+                filepath = UPLOAD_FOLDER / f"{timestamp}_{filename}"
+                file.save(str(filepath))
+                
+                try:
+                    result = predict_ensemble(str(filepath), feature_type)
+                    result['filename'] = filename
+                    
+                    if 'classes' in METADATA:
+                        result['predicted_class'] = METADATA['classes'][result['predicted_class_idx']]
+                    
+                    results.append(result)
+                except Exception as e:
+                    results.append({'filename': filename, 'error': str(e)})
+        
+        return jsonify({'results': results, 'total': len(results)})
+    
+    except Exception as e:
+        logger.error(f"Error en batch: {str(e)}")
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/history', methods=['GET'])
+def get_history():
+    """Obtiene historial de predicciones"""
+    try:
+        history = []
+        for result_file in sorted(RESULTS_DIR.glob('*.json'), reverse=True)[:50]:
+            with open(result_file, 'r') as f:
+                history.append(json.load(f))
+        return jsonify({'history': history, 'count': len(history)})
+    except Exception as e:
+        logger.error(f"Error obteniendo historial: {str(e)}")
+        return jsonify({'error': str(e)}), 500
+
+
+# ========== INICIALIZACIÓN ==========
+if __name__ == '__main__':
+    logger.info("Iniciando servidor de clasificación de audio...")
+    
+    # Cargar modelos al iniciar
+    load_models_and_metadata()
+    
+    if not MODELS:
+        logger.error("¡ADVERTENCIA! No se cargaron modelos. Verifica la ruta MODEL_DIR")
+    else:
+        logger.info(f"✓ Sistema listo con {sum(len(m) for m in MODELS.values())} modelos")
+    
+    # Iniciar servidor
+    app.run(
+        host='0.0.0.0',
+        port=8000,
+        debug=False
+    )
+    

@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+env/
+venv/
+*.egg-info/
+dist/
+build/
+.ipynb_checkpoints/
+
+# VSCode
+.vscode/
+
+# Conda envs
+/.conda/
+
+# Data (evitar subir datasets grandes)
+data/
+datasets/
+*.wav
+*.mp3
+
+# Modelos
+models/
+*.h5
+*.ckpt

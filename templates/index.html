@@ -1,0 +1,669 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Clasificador de Audio - CNN</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+
+        .header {
+            background: white;
+            border-radius: 15px;
+            padding: 30px;
+            margin-bottom: 30px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.2);
+            text-align: center;
+        }
+
+        .header h1 {
+            color: #667eea;
+            margin-bottom: 10px;
+            font-size: 2.5em;
+        }
+
+        .header p {
+            color: #666;
+            font-size: 1.1em;
+        }
+
+        .status-badge {
+            display: inline-block;
+            padding: 5px 15px;
+            border-radius: 20px;
+            font-size: 0.9em;
+            margin-top: 10px;
+        }
+
+        .status-online {
+            background: #10b981;
+            color: white;
+        }
+
+        .status-offline {
+            background: #ef4444;
+            color: white;
+        }
+
+        .main-content {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 30px;
+            margin-bottom: 30px;
+        }
+
+        @media (max-width: 768px) {
+            .main-content {
+                grid-template-columns: 1fr;
+            }
+        }
+
+        .card {
+            background: white;
+            border-radius: 15px;
+            padding: 30px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.2);
+        }
+
+        .card h2 {
+            color: #333;
+            margin-bottom: 20px;
+            font-size: 1.5em;
+            border-bottom: 3px solid #667eea;
+            padding-bottom: 10px;
+        }
+
+        .upload-area {
+            border: 3px dashed #667eea;
+            border-radius: 10px;
+            padding: 40px;
+            text-align: center;
+            cursor: pointer;
+            transition: all 0.3s;
+            background: #f8f9fa;
+        }
+
+        .upload-area:hover {
+            background: #e9ecef;
+            border-color: #764ba2;
+        }
+
+        .upload-area.dragover {
+            background: #e9ecef;
+            border-color: #10b981;
+            transform: scale(1.02);
+        }
+
+        .upload-icon {
+            font-size: 4em;
+            margin-bottom: 20px;
+            color: #667eea;
+        }
+
+        .file-input {
+            display: none;
+        }
+
+        .btn {
+            padding: 12px 30px;
+            border: none;
+            border-radius: 8px;
+            font-size: 1em;
+            cursor: pointer;
+            transition: all 0.3s;
+            font-weight: 600;
+        }
+
+        .btn-primary {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+        }
+
+        .btn-primary:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 15px rgba(102, 126, 234, 0.4);
+        }
+
+        .btn-primary:disabled {
+            background: #ccc;
+            cursor: not-allowed;
+            transform: none;
+        }
+
+        .feature-selector {
+            margin: 20px 0;
+        }
+
+        .feature-option {
+            display: inline-block;
+            margin: 5px;
+            padding: 10px 20px;
+            border: 2px solid #667eea;
+            border-radius: 8px;
+            cursor: pointer;
+            transition: all 0.3s;
+        }
+
+        .feature-option:hover {
+            background: #f0f4ff;
+        }
+
+        .feature-option input {
+            margin-right: 8px;
+        }
+
+        .result-section {
+            margin-top: 30px;
+            padding: 20px;
+            background: #f8f9fa;
+            border-radius: 10px;
+            display: none;
+        }
+
+        .result-section.show {
+            display: block;
+            animation: slideDown 0.5s;
+        }
+
+        @keyframes slideDown {
+            from {
+                opacity: 0;
+                transform: translateY(-20px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        .prediction-card {
+            background: white;
+            padding: 20px;
+            border-radius: 10px;
+            margin: 10px 0;
+            border-left: 5px solid #667eea;
+        }
+
+        .prediction-class {
+            font-size: 1.5em;
+            color: #667eea;
+            font-weight: bold;
+            margin-bottom: 10px;
+        }
+
+        .confidence-bar {
+            background: #e9ecef;
+            height: 30px;
+            border-radius: 15px;
+            overflow: hidden;
+            margin: 10px 0;
+        }
+
+        .confidence-fill {
+            height: 100%;
+            background: linear-gradient(90deg, #10b981 0%, #059669 100%);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: white;
+            font-weight: bold;
+            transition: width 1s;
+        }
+
+        .probabilities {
+            margin-top: 20px;
+        }
+
+        .prob-item {
+            display: flex;
+            align-items: center;
+            margin: 8px 0;
+        }
+
+        .prob-label {
+            width: 150px;
+            font-weight: 600;
+        }
+
+        .prob-bar {
+            flex: 1;
+            height: 20px;
+            background: #e9ecef;
+            border-radius: 10px;
+            overflow: hidden;
+            margin: 0 10px;
+        }
+
+        .prob-bar-fill {
+            height: 100%;
+            background: linear-gradient(90deg, #667eea 0%, #764ba2 100%);
+            transition: width 0.5s;
+        }
+
+        .prob-value {
+            width: 60px;
+            text-align: right;
+            font-weight: 600;
+        }
+
+        .loader {
+            border: 5px solid #f3f3f3;
+            border-top: 5px solid #667eea;
+            border-radius: 50%;
+            width: 50px;
+            height: 50px;
+            animation: spin 1s linear infinite;
+            margin: 20px auto;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        .model-info {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 15px;
+            margin-top: 20px;
+        }
+
+        .info-box {
+            background: #f8f9fa;
+            padding: 15px;
+            border-radius: 8px;
+            text-align: center;
+        }
+
+        .info-label {
+            font-size: 0.9em;
+            color: #666;
+            margin-bottom: 5px;
+        }
+
+        .info-value {
+            font-size: 1.3em;
+            font-weight: bold;
+            color: #667eea;
+        }
+
+        .history-list {
+            max-height: 400px;
+            overflow-y: auto;
+        }
+
+        .history-item {
+            background: #f8f9fa;
+            padding: 15px;
+            margin: 10px 0;
+            border-radius: 8px;
+            border-left: 4px solid #667eea;
+        }
+
+        .history-item:hover {
+            background: #e9ecef;
+        }
+
+        .timestamp {
+            font-size: 0.85em;
+            color: #666;
+        }
+
+        .error-message {
+            background: #fee;
+            color: #c33;
+            padding: 15px;
+            border-radius: 8px;
+            border-left: 4px solid #c33;
+            margin: 10px 0;
+        }
+
+        .success-message {
+            background: #efe;
+            color: #3c3;
+            padding: 15px;
+            border-radius: 8px;
+            border-left: 4px solid #3c3;
+            margin: 10px 0;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <!-- Header -->
+        <div class="header">
+            <h1>🎵 Clasificador de Audio CNN</h1>
+            <p>Sistema de clasificación de enfermedades respiratorias</p>
+            <span class="status-badge" id="statusBadge">Verificando...</span>
+            <div class="model-info" id="modelInfo"></div>
+        </div>
+
+        <!-- Main Content -->
+        <div class="main-content">
+            <!-- Upload Section -->
+            <div class="card">
+                <h2>📤 Cargar Audio</h2>
+                
+                <div class="upload-area" id="uploadArea">
+                    <div class="upload-icon">🎤</div>
+                    <h3>Arrastra un archivo .WAV aquí</h3>
+                    <p>o haz clic para seleccionar</p>
+                    <input type="file" id="fileInput" class="file-input" accept=".wav" multiple>
+                </div>
+
+                <div class="feature-selector">
+                    <h3>Tipo de características:</h3>
+                    <label class="feature-option">
+                        <input type="radio" name="feature" value="mfcc" checked>
+                        MFCC
+                    </label>
+                    <label class="feature-option">
+                        <input type="radio" name="feature" value="mel">
+                        Mel-Spectrogram
+                    </label>
+                    <label class="feature-option">
+                        <input type="radio" name="feature" value="concat">
+                        MFCC + Mel 
+                    </label>
+                </div>
+
+                <button class="btn btn-primary" id="predictBtn" disabled>
+                    Clasificar Audio
+                </button>
+
+                <div id="selectedFiles"></div>
+            </div>
+
+            <!-- Results Section -->
+            <div class="card">
+                <h2>📊 Resultados</h2>
+                <div id="resultsContainer">
+                    <p style="text-align: center; color: #999; padding: 40px;">
+                        Los resultados aparecerán aquí después de la clasificación
+                    </p>
+                </div>
+            </div>
+        </div>
+
+        <!-- History Section -->
+        <div class="card">
+            <h2>📜 Historial de Clasificaciones</h2>
+            <div class="history-list" id="historyList">
+                <p style="text-align: center; color: #999; padding: 20px;">
+                    Cargando historial...
+                </p>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const API_URL = window.location.origin;
+        let selectedFiles = [];
+
+        // Check system status on load
+        async function checkStatus() {
+            try {
+                const response = await fetch(`${API_URL}/api/info`);
+                const data = await response.json();
+                
+                const badge = document.getElementById('statusBadge');
+                if (data.status === 'online') {
+                    badge.textContent = '✓ Sistema Online';
+                    badge.className = 'status-badge status-online';
+                    
+                    // Display model info
+                    displayModelInfo(data);
+                } else {
+                    badge.textContent = '✗ Sistema Offline';
+                    badge.className = 'status-badge status-offline';
+                }
+            } catch (error) {
+                const badge = document.getElementById('statusBadge');
+                badge.textContent = '✗ Error de Conexión';
+                badge.className = 'status-badge status-offline';
+            }
+        }
+
+        function displayModelInfo(data) {
+            const container = document.getElementById('modelInfo');
+            const features = data.available_features || [];
+            
+            let html = '';
+            features.forEach(ft => {
+                const meta = data.metadata[ft] || {};
+                html += `
+                    <div class="info-box">
+                        <div class="info-label">${ft.toUpperCase()}</div>
+                        <div class="info-value">${meta.mean_acc ? (meta.mean_acc * 100).toFixed(2) + '%' : 'N/A'}</div>
+                        <div class="info-label">Accuracy</div>
+                    </div>
+                `;
+            });
+            
+            container.innerHTML = html;
+        }
+
+        // File upload handling
+        const uploadArea = document.getElementById('uploadArea');
+        const fileInput = document.getElementById('fileInput');
+        const predictBtn = document.getElementById('predictBtn');
+
+        uploadArea.addEventListener('click', () => fileInput.click());
+
+        uploadArea.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            uploadArea.classList.add('dragover');
+        });
+
+        uploadArea.addEventListener('dragleave', () => {
+            uploadArea.classList.remove('dragover');
+        });
+
+        uploadArea.addEventListener('drop', (e) => {
+            e.preventDefault();
+            uploadArea.classList.remove('dragover');
+            handleFiles(e.dataTransfer.files);
+        });
+
+        fileInput.addEventListener('change', (e) => {
+            handleFiles(e.target.files);
+        });
+
+        function handleFiles(files) {
+            selectedFiles = Array.from(files).filter(f => f.name.endsWith('.wav') || f.name.endsWith('.WAV'));
+            
+            const container = document.getElementById('selectedFiles');
+            if (selectedFiles.length > 0) {
+                container.innerHTML = `
+                    <div class="success-message">
+                        ✓ ${selectedFiles.length} archivo(s) seleccionado(s):
+                        <ul>
+                            ${selectedFiles.map(f => `<li>${f.name} (${(f.size/1024).toFixed(1)} KB)</li>`).join('')}
+                        </ul>
+                    </div>
+                `;
+                predictBtn.disabled = false;
+            } else {
+                container.innerHTML = '<div class="error-message">⚠ Por favor selecciona archivos .WAV válidos</div>';
+                predictBtn.disabled = true;
+            }
+        }
+
+        // Prediction
+        predictBtn.addEventListener('click', async () => {
+            if (selectedFiles.length === 0) return;
+
+            const featureType = document.querySelector('input[name="feature"]:checked').value;
+            const resultsContainer = document.getElementById('resultsContainer');
+            
+            resultsContainer.innerHTML = '<div class="loader"></div><p style="text-align: center;">Clasificando...</p>';
+            predictBtn.disabled = true;
+
+            try {
+                const formData = new FormData();
+                
+                if (selectedFiles.length === 1) {
+                    formData.append('file', selectedFiles[0]);
+                    formData.append('feature_type', featureType);
+                    
+                    const response = await fetch(`${API_URL}/api/predict`, {
+                        method: 'POST',
+                        body: formData
+                    });
+                    
+                    const data = await response.json();
+                    displayResult(data);
+                } else {
+                    selectedFiles.forEach(file => formData.append('files', file));
+                    formData.append('feature_type', featureType);
+                    
+                    const response = await fetch(`${API_URL}/api/predict/batch`, {
+                        method: 'POST',
+                        body: formData
+                    });
+                    
+                    const data = await response.json();
+                    displayBatchResults(data.results);
+                }
+                
+                loadHistory();
+            } catch (error) {
+                resultsContainer.innerHTML = `
+                    <div class="error-message">
+                        ❌ Error: ${error.message}
+                    </div>
+                `;
+            } finally {
+                predictBtn.disabled = false;
+            }
+        });
+
+        function displayResult(data) {
+            const container = document.getElementById('resultsContainer');
+            
+            if (data.error) {
+                container.innerHTML = `<div class="error-message">❌ ${data.error}</div>`;
+                return;
+            }
+
+            const confidence = (data.confidence * 100).toFixed(2);
+            const predictedClass = data.predicted_class || `Clase ${data.predicted_class_idx}`;
+
+            let probsHtml = '';
+            if (data.class_probabilities) {
+                probsHtml = '<div class="probabilities"><h3>Probabilidades por clase:</h3>';
+                for (const [cls, prob] of Object.entries(data.class_probabilities)) {
+                    probsHtml += `
+                        <div class="prob-item">
+                            <div class="prob-label">${cls}</div>
+                            <div class="prob-bar">
+                                <div class="prob-bar-fill" style="width: ${prob * 100}%"></div>
+                            </div>
+                            <div class="prob-value">${(prob * 100).toFixed(1)}%</div>
+                        </div>
+                    `;
+                }
+                probsHtml += '</div>';
+            }
+
+            container.innerHTML = `
+                <div class="prediction-card">
+                    <div class="prediction-class">🎯 ${predictedClass}</div>
+                    <div><strong>Archivo:</strong> ${data.filename}</div>
+                    <div><strong>Feature:</strong> ${data.feature_type}</div>
+                    
+                    <h3 style="margin-top: 15px;">Confianza del Ensemble:</h3>
+                    <div class="confidence-bar">
+                        <div class="confidence-fill" style="width: ${confidence}%">
+                            ${confidence}%
+                        </div>
+                    </div>
+                    
+                    ${probsHtml}
+                </div>
+            `;
+        }
+
+        function displayBatchResults(results) {
+            const container = document.getElementById('resultsContainer');
+            let html = '<h3>Resultados del Lote:</h3>';
+            
+            results.forEach((data, idx) => {
+                if (data.error) {
+                    html += `
+                        <div class="prediction-card">
+                            <div class="error-message">
+                                ❌ ${data.filename}: ${data.error}
+                            </div>
+                        </div>
+                    `;
+                } else {
+                    const confidence = (data.confidence * 100).toFixed(2);
+                    const predictedClass = data.predicted_class || `Clase ${data.predicted_class_idx}`;
+                    
+                    html += `
+                        <div class="prediction-card">
+                            <div class="prediction-class">🎯 ${predictedClass}</div>
+                            <div><strong>Archivo:</strong> ${data.filename}</div>
+                            <div class="confidence-bar">
+                                <div class="confidence-fill" style="width: ${confidence}%">
+                                    ${confidence}%
+                                </div>
+                            </div>
+                        </div>
+                    `;
+                }
+            });
+            
+            container.innerHTML = html;
+        }
+
+        async function loadHistory() {
+            try {
+                const response = await fetch(`${API_URL}/api/history`);
+                const data = await response.json();
+                
+                const container = document.getElementById('historyList');
+                if (data.history && data.history.length > 0) {
+                    container.innerHTML = data.history.map(item => {
+                        const cls = item.predicted_class || `Clase ${item.predicted_class_idx}`;
+                        const conf = (item.confidence * 100).toFixed(1);
+                        return `
+                            <div class="history-item">
+                                <div><strong>${cls}</strong> (${conf}% confianza)</div>
+                                <div>📁 ${item.filename}</div>
+                                <div class="timestamp">🕒 ${item.timestamp}</div>
+                            </div>
+                        `;
+                    }).join('');
+                } else {
+                    container.innerHTML = '<p style="text-align: center; color: #999;">Sin historial aún</p>';
+                }
+            } catch (error) {
+                console.error('Error loading history:', error);
+            }
+        }
+
+        // Initialize
+        checkStatus();
+        loadHistory();
+        setInterval(checkStatus, 60000); // Check status every minute
+    </script>
+</body>
+</html>
